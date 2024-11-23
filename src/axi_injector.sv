@@ -1,4 +1,4 @@
-// Copyright (c) 2019 ETH Zurich, University of Bologna
+// Copyright (c) 2024 ETH Zurich, University of Bologna
 //
 // Copyright and related rights are licensed under the Solderpad Hardware
 // License, Version 0.51 (the "License"); you may not use this file except in
@@ -24,6 +24,7 @@ module axi_injector #(
   parameter bit  InjW       = 1'b0,
   parameter bit  InjR       = 1'b0,
   parameter      AxiDataWidth = 10'd512,
+  parameter      SizeQueue  = 3'd4,
   parameter type axi_req_t  = logic,
   parameter type axi_resp_t = logic
 ) (
@@ -48,171 +49,184 @@ module axi_injector #(
   state_t current_state, next_state; // State variables
   int quque_size; 
 
-  transaction_t transaction_queue[$:4]; // Queue of transactions
+  transaction_t aw_trans_queue[$:SizeQueue]; // Queue of transactions
+  transaction_t ar_trans_queue[$:SizeQueue];
+  transaction_t w_trans_queue[$:SizeQueue];
 
   axi_req_t      current_req;  // Holds the current request being emitted
-  string         req_type;
-  transaction_t  transaction_data;
-  transaction_t transaction;
-  logic pending_transaction;
-  logic emitted_trans;
-  logic enable_trans;
-  logic debug;
-  logic fifo_empty;
+  transaction_t  aw_trans_data, ar_trans_data, w_trans_data;
+  transaction_t  aw_trans, ar_trans, w_trans;
+  logic aw_pending, ar_pending, w_pending;
+  logic aw_req, w_req, ar_req;
   int sim_time;
+  bit file_line_ack;
+  string req_type;
 
   initial begin
     string file_line;
     int file;
+    // If is true the prev line has been consumed
+    file_line_ack = 1'b1;
+
+    // Open file
     file = $fopen(FileName, "r");
     if (file == 0) begin
       $fatal(1, "Failed to open file: %s", FileName);
     end
 
+    // Start reading lines from file
     while (!$feof(file)) begin
-      if (transaction_queue.size() <= 4) begin 
+      //$display("aw: %d, ar: %d, w: %d ",aw_trans_queue.size(), ar_trans_queue.size(), w_trans_queue.size());
+      if (file_line_ack == 1'b1) begin
         file_line = "";
         $fgets(file_line, file);  
-        transaction.timestep = extract_value(file_line, "time");
-        transaction.line_data = file_line;
-        transaction_queue.push_back(transaction);
-        transaction_data.timestep = transaction_queue[0].timestep;
-        transaction_data.line_data = transaction_queue[0].line_data;
-      end 
+      end
+      //$display("aw %d ar %d w %d %d time %d", aw_trans_queue.size(), ar_trans_queue.size(), w_trans_queue.size(), SizeQueue,$time);
+      // Check type of AXI transaction
+      req_type = extract_transtype(file_line, "type");
+      case(req_type)
+        "AW": begin
+          if (aw_trans_queue.size() < SizeQueue) begin
+            aw_trans.timestep  = extract_value(file_line, "time");
+            aw_trans.line_data = file_line;
+            aw_trans_queue.push_back(aw_trans);
+            aw_trans_data.timestep = aw_trans_queue[0].timestep;
+            aw_trans_data.line_data = aw_trans_queue[0].line_data;
+            file_line_ack = 1'b1; 
+          end else begin 
+            file_line_ack = 1'b0;           
+          end
+        end
+        "AR": begin
+          if (ar_trans_queue.size() < SizeQueue) begin
+            ar_trans.timestep  = extract_value(file_line, "time");
+            ar_trans.line_data = file_line;
+            ar_trans_queue.push_back(ar_trans);
+            ar_trans_data.timestep = ar_trans_queue[0].timestep;
+            ar_trans_data.line_data = ar_trans_queue[0].line_data;
+            file_line_ack = 1'b1; 
+          end else begin 
+            file_line_ack = 1'b0;          
+          end
+        end
+        "W": begin
+          if (w_trans_queue.size() < SizeQueue) begin
+            w_trans.timestep  = extract_value(file_line, "time");
+            w_trans.line_data = file_line;
+            w_trans_queue.push_back(w_trans);
+            $display("t: %d, fl: %s", $time, w_trans_queue[3].line_data);
+            w_trans_data.timestep = w_trans_queue[0].timestep;
+            w_trans_data.line_data = w_trans_queue[0].line_data;
+            file_line_ack = 1'b1; 
+          end else begin 
+            file_line_ack = 1'b0;
+          end
+        end
+      endcase  
       //$display("tran queue %d",transaction_data.timestep);
       @(posedge clk_i);
     end  
   end
 
+  // Simulation clocks
   always @(posedge clk_i) begin
     sim_time = $time;
   end 
 
-  always_comb begin 
-    if(transaction_queue.size() != 0) fifo_empty = 1'b0;
-    else fifo_empty = 1'b1;
+  always_comb begin
+    // AW AXI pending request
+    if (!rst_ni) begin
+      aw_req = 1'b0;
+      ar_req = 1'b0;
+      w_req  = 1'b0;
+    end else begin
+      if (aw_trans_data.timestep == sim_time) begin
+        aw_req = 1'b1;
+      end else aw_req = 1'b0;
+  
+      // Pending AR AXI request
+      if (ar_trans_data.timestep == sim_time) begin
+        ar_req = 1'b1;
+      end else ar_req = 1'b0;
+  
+      if (w_trans_data.timestep == sim_time) begin
+        w_req = 1'b1;
+      end else w_req = 1'b0;
+  
+      if (aw_trans_data.timestep == sim_time && axi_resp_i.aw_ready) begin
+        aw_trans_queue.pop_front();
+      end 
+  
+      if (w_trans_data.timestep == sim_time && axi_resp_i.w_ready) begin
+        w_trans_queue.pop_front();
+      end 
+      
+      if (ar_trans_data.timestep == sim_time && axi_resp_i.ar_ready) begin
+        ar_trans_queue.pop_front();
+      end 
+    end
   end
 
-  always_comb begin
-    if (transaction_data.timestep == sim_time) begin
-      pending_transaction = 1'b1;
-    end else pending_transaction = 1'b0;
+  always_ff @(posedge clk_i or negedge rst_ni) begin : proc_pending_req
+    if(~rst_ni) begin
+      aw_pending <= 1'b0;
+      w_pending  <= 1'b0;
+      ar_pending <= 1'b0;
+    end else begin
+      if (aw_req && !axi_resp_i.aw_ready) begin
+        aw_pending <= 1'b1; 
+      end else aw_pending <= 1'b0;
 
-    if (transaction_data.timestep == sim_time && emitted_trans) begin
-      transaction_queue.pop_front();
-    end 
+      if (w_req && !axi_resp_i.w_ready) begin
+        w_pending <= 1'b1; 
+      end else w_pending <= 1'b0;
+
+      if (ar_req && !axi_resp_i.ar_ready) begin
+        ar_pending <= 1'b1; 
+      end else ar_pending <= 1'b0;
+    end
   end
 
   // Clock-driven logic
   always_comb begin
-    current_req = '0;
-
-    req_type = extract_transtype(transaction_data.line_data, "type");
+    axi_req_o = '0;
     //$display("trans type: %s",req_type);
     // Decode request (AW or W supported at the moment)
-    if (req_type == "AW") begin
-      current_req.aw_valid = 1'b1;
-      current_req.aw.addr  = extract_value(transaction_data.line_data, "addr");
-      current_req.aw.id    = extract_value(transaction_data.line_data, "id");
-      current_req.aw.burst = extract_value(transaction_data.line_data, "burst");
-      current_req.aw.len   = extract_value(transaction_data.line_data, "len");
-      current_req.aw.cache = extract_value(transaction_data.line_data, "cache");
-      current_req.aw.lock  = extract_value(transaction_data.line_data, "lock");
-      current_req.aw.prot  = extract_value(transaction_data.line_data, "prot");
-      current_req.aw.qos   = extract_value(transaction_data.line_data, "qos");
-      current_req.aw.size  = extract_value(transaction_data.line_data, "size");
-      current_req.aw.user  = extract_value(transaction_data.line_data, "user");
-    end else if (req_type == "W") begin
-      current_req.w_valid = 1'b1;
-      current_req.w.data  = extract_value(transaction_data.line_data, "data");
-      current_req.w.strb  = extract_value(transaction_data.line_data, "strb");
-      current_req.w.last  = extract_value(transaction_data.line_data, "last");
-      current_req.w.user  = extract_value(transaction_data.line_data, "user");
-      current_req.aw_valid = '0;
-      current_req.aw.addr  = '0;
-      current_req.aw.id    = '0;
-      current_req.aw.burst = '0;
-      current_req.aw.len   = '0;
-      current_req.aw.cache = '0;
-      current_req.aw.lock  = '0;
-      current_req.aw.prot  = '0;
-      current_req.aw.qos   = '0;
-      current_req.aw.size  = '0;
-      current_req.aw.user  = '0;
-    end else if (req_type == "AR") begin
-      current_req.ar_valid = 1'b1;
-      current_req.ar.addr  = extract_value(transaction_data.line_data, "addr");
-      current_req.ar.id    = extract_value(transaction_data.line_data, "id");
-      current_req.ar.burst = extract_value(transaction_data.line_data, "burst");
-      current_req.ar.len   = extract_value(transaction_data.line_data, "len");
-      current_req.ar.cache = extract_value(transaction_data.line_data, "cache");
-      current_req.ar.lock  = extract_value(transaction_data.line_data, "lock");
-      current_req.ar.prot  = extract_value(transaction_data.line_data, "prot");
-      current_req.ar.qos   = extract_value(transaction_data.line_data, "qos");
-      current_req.ar.size  = extract_value(transaction_data.line_data, "size");
-      current_req.ar.user  = extract_value(transaction_data.line_data, "user");
+    if (aw_req || aw_pending) begin
+      axi_req_o.aw_valid = 1'b1;
+      axi_req_o.aw.addr  = extract_value(aw_trans_data.line_data, "addr");
+      axi_req_o.aw.id    = extract_value(aw_trans_data.line_data, "id");
+      axi_req_o.aw.burst = extract_value(aw_trans_data.line_data, "burst");
+      axi_req_o.aw.len   = extract_value(aw_trans_data.line_data, "len");
+      axi_req_o.aw.cache = extract_value(aw_trans_data.line_data, "cache");
+      axi_req_o.aw.lock  = extract_value(aw_trans_data.line_data, "lock");
+      axi_req_o.aw.prot  = extract_value(aw_trans_data.line_data, "prot");
+      axi_req_o.aw.qos   = extract_value(aw_trans_data.line_data, "qos");
+      axi_req_o.aw.size  = extract_value(aw_trans_data.line_data, "size");
+      axi_req_o.aw.user  = extract_value(aw_trans_data.line_data, "user");
+    end 
+
+    if (w_req || w_pending) begin
+      axi_req_o.w_valid = 1'b1;
+      axi_req_o.w.data  = extract_value(w_trans_data.line_data, "data");
+      axi_req_o.w.strb  = extract_value(w_trans_data.line_data, "strb");
+      axi_req_o.w.last  = extract_value(w_trans_data.line_data, "last");
+      axi_req_o.w.user  = extract_value(w_trans_data.line_data, "user");
+    end 
+
+    if (ar_req || ar_pending) begin
+      axi_req_o.ar_valid = 1'b1;
+      axi_req_o.ar.addr  = extract_value(ar_trans_data.line_data, "addr");
+      axi_req_o.ar.id    = extract_value(ar_trans_data.line_data, "id");
+      axi_req_o.ar.burst = extract_value(ar_trans_data.line_data, "burst");
+      axi_req_o.ar.len   = extract_value(ar_trans_data.line_data, "len");
+      axi_req_o.ar.cache = extract_value(ar_trans_data.line_data, "cache");
+      axi_req_o.ar.lock  = extract_value(ar_trans_data.line_data, "lock");
+      axi_req_o.ar.prot  = extract_value(ar_trans_data.line_data, "prot");
+      axi_req_o.ar.qos   = extract_value(ar_trans_data.line_data, "qos");
+      axi_req_o.ar.size  = extract_value(ar_trans_data.line_data, "size");
+      axi_req_o.ar.user  = extract_value(ar_trans_data.line_data, "user");
     end      //end
-  end
-
-  // State Transition Logic (Combinational)
-  always_comb begin
-    next_state = current_state;
-    emitted_trans = 1'b0;
-    debug =1'b0;
-    axi_req_o = '0;
-    case (current_state)
-      IDLE: begin 
-        if (sim_time) debug =1'b1;
-        if(pending_transaction) begin
-          axi_req_o = current_req;
-          if (req_type == "AW") begin 
-            if (axi_resp_i.aw_ready) begin 
-              next_state = IDLE; 
-              emitted_trans = 1'b1;
-            end else next_state = ISSUE;  
-          end else if (req_type == "W") begin 
-            if (axi_resp_i.w_ready) begin 
-              next_state = IDLE;
-              emitted_trans = 1'b1; 
-            end else next_state = ISSUE;  
-          end else if (req_type == "R") begin 
-            if (axi_resp_i.ar_ready) begin 
-              next_state = IDLE; 
-              emitted_trans = 1'b1;
-            end else next_state = ISSUE;  
-          end else next_state = IDLE;
-        end else next_state = IDLE;
-      end              
-      ISSUE: begin
-        axi_req_o = current_req;
-        if (req_type == "AW") begin 
-          if (axi_resp_i.aw_ready) begin 
-            next_state = IDLE; 
-            emitted_trans = 1'b1;
-          end else next_state = ISSUE;  
-        end else if (req_type == "W") begin 
-          if (axi_resp_i.w_ready) begin 
-            next_state = IDLE;
-            emitted_trans = 1'b1; 
-          end else next_state = ISSUE;  
-        end else if (req_type == "R") begin 
-          if (axi_resp_i.ar_ready) begin 
-            next_state = IDLE; 
-            emitted_trans = 1'b1;
-          end else next_state = ISSUE;  
-        end else axi_req_o = '0;  
-      end 
-      default: next_state = IDLE; // Default case for safety
-    endcase
-  end
-
-  // State Register
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      current_state <= IDLE; 
-    end else begin
-      current_state <= next_state;
-    end
   end
 
   // Helper function to extract the numeric value from a string field
