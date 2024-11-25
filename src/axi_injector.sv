@@ -81,6 +81,7 @@ module axi_injector #(
         file_line = "";
         $fgets(file_line, file);  
       end
+      //$display("fl: %s time %d", file_line,$time);
       //$display("aw %d ar %d w %d %d time %d", aw_trans_queue.size(), ar_trans_queue.size(), w_trans_queue.size(), SizeQueue,$time);
       // Check type of AXI transaction
       req_type = extract_transtype(file_line, "type");
@@ -114,7 +115,7 @@ module axi_injector #(
             w_trans.timestep  = extract_value(file_line, "time");
             w_trans.line_data = file_line;
             w_trans_queue.push_back(w_trans);
-            $display("t: %d, fl: %s", $time, w_trans_queue[3].line_data);
+            //$display("t: %d, fl: %s", $time, w_trans_queue[3].line_data);
             w_trans_data.timestep = w_trans_queue[0].timestep;
             w_trans_data.line_data = w_trans_queue[0].line_data;
             file_line_ack = 1'b1; 
@@ -130,7 +131,7 @@ module axi_injector #(
 
   // Simulation clocks
   always @(posedge clk_i) begin
-    sim_time = $time;
+    sim_time = $time + 10;
   end 
 
   always_comb begin
@@ -152,19 +153,24 @@ module axi_injector #(
       if (w_trans_data.timestep == sim_time) begin
         w_req = 1'b1;
       end else w_req = 1'b0;
-  
-      if (aw_trans_data.timestep == sim_time && axi_resp_i.aw_ready) begin
+    end 
+  end 
+
+  always @(posedge clk_i) begin
+      if (aw_req && axi_resp_i.aw_ready) begin
+        //$display("here aw_req %d", $time);
         aw_trans_queue.pop_front();
       end 
-  
-      if (w_trans_data.timestep == sim_time && axi_resp_i.w_ready) begin
+      
+      if (w_req && axi_resp_i.w_ready) begin
+        //$display("here w_req %d", $time);
         w_trans_queue.pop_front();
       end 
       
-      if (ar_trans_data.timestep == sim_time && axi_resp_i.ar_ready) begin
+      if (ar_req && axi_resp_i.ar_ready) begin
         ar_trans_queue.pop_front();
       end 
-    end
+    //end
   end
 
   always_ff @(posedge clk_i or negedge rst_ni) begin : proc_pending_req
@@ -175,21 +181,25 @@ module axi_injector #(
     end else begin
       if (aw_req && !axi_resp_i.aw_ready) begin
         aw_pending <= 1'b1; 
-      end else aw_pending <= 1'b0;
+      end else if (axi_resp_i.aw_ready) aw_pending <= 1'b0;
 
       if (w_req && !axi_resp_i.w_ready) begin
         w_pending <= 1'b1; 
-      end else w_pending <= 1'b0;
+      end else if (axi_resp_i.w_ready) w_pending <= 1'b0;
 
       if (ar_req && !axi_resp_i.ar_ready) begin
         ar_pending <= 1'b1; 
-      end else ar_pending <= 1'b0;
+      end else if (axi_resp_i.ar_ready) ar_pending <= 1'b0;
     end
   end
 
   // Clock-driven logic
   always_comb begin
     axi_req_o = '0;
+    if (rst_ni) begin
+      axi_req_o.b_ready = 1'b1;
+      axi_req_o.r_ready = 1'b1;
+    end
     //$display("trans type: %s",req_type);
     // Decode request (AW or W supported at the moment)
     if (aw_req || aw_pending) begin
