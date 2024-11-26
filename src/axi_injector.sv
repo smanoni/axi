@@ -56,11 +56,32 @@ module axi_injector #(
   axi_req_t      current_req;  // Holds the current request being emitted
   transaction_t  aw_trans_data, ar_trans_data, w_trans_data;
   transaction_t  aw_trans, ar_trans, w_trans;
+  transaction_t  w_trans0, w_trans1, w_trans2, w_trans3; 
+
   logic aw_pending, ar_pending, w_pending;
   logic aw_req, w_req, ar_req;
   int sim_time;
   bit file_line_ack;
   string req_type;
+  logic aw_pop, w_pop, ar_pop;
+
+  always_comb begin
+    w_trans_data.timestep = w_trans_queue[0].timestep;
+    w_trans_data.line_data = w_trans_queue[0].line_data;
+    aw_trans_data.timestep = aw_trans_queue[0].timestep;
+    aw_trans_data.line_data = aw_trans_queue[0].line_data;
+    ar_trans_data.timestep = ar_trans_queue[0].timestep;
+    ar_trans_data.line_data = ar_trans_queue[0].line_data;
+
+    w_trans0.timestep  = w_trans_queue[0].timestep;
+    w_trans0.line_data = w_trans_queue[0].line_data;
+    w_trans1.timestep  = w_trans_queue[1].timestep;
+    w_trans1.line_data = w_trans_queue[1].line_data;
+    w_trans2.timestep  = w_trans_queue[2].timestep;
+    w_trans2.line_data = w_trans_queue[2].line_data;
+    w_trans3.timestep  = w_trans_queue[3].timestep;
+    w_trans3.line_data = w_trans_queue[3].line_data;
+  end
 
   initial begin
     string file_line;
@@ -76,6 +97,7 @@ module axi_injector #(
 
     // Start reading lines from file
     while (!$feof(file)) begin
+  
       //$display("aw: %d, ar: %d, w: %d ",aw_trans_queue.size(), ar_trans_queue.size(), w_trans_queue.size());
       if (file_line_ack == 1'b1) begin
         file_line = "";
@@ -91,8 +113,8 @@ module axi_injector #(
             aw_trans.timestep  = extract_value(file_line, "time");
             aw_trans.line_data = file_line;
             aw_trans_queue.push_back(aw_trans);
-            aw_trans_data.timestep = aw_trans_queue[0].timestep;
-            aw_trans_data.line_data = aw_trans_queue[0].line_data;
+            //aw_trans_data.timestep = aw_trans_queue[0].timestep;
+            //aw_trans_data.line_data = aw_trans_queue[0].line_data;
             file_line_ack = 1'b1; 
           end else begin 
             file_line_ack = 1'b0;           
@@ -103,8 +125,8 @@ module axi_injector #(
             ar_trans.timestep  = extract_value(file_line, "time");
             ar_trans.line_data = file_line;
             ar_trans_queue.push_back(ar_trans);
-            ar_trans_data.timestep = ar_trans_queue[0].timestep;
-            ar_trans_data.line_data = ar_trans_queue[0].line_data;
+            //ar_trans_data.timestep = ar_trans_queue[0].timestep;
+            //ar_trans_data.line_data = ar_trans_queue[0].line_data;
             file_line_ack = 1'b1; 
           end else begin 
             file_line_ack = 1'b0;          
@@ -116,12 +138,15 @@ module axi_injector #(
             w_trans.line_data = file_line;
             w_trans_queue.push_back(w_trans);
             //$display("t: %d, fl: %s", $time, w_trans_queue[3].line_data);
-            w_trans_data.timestep = w_trans_queue[0].timestep;
-            w_trans_data.line_data = w_trans_queue[0].line_data;
+            //w_trans_data.timestep = w_trans_queue[0].timestep;
+            //w_trans_data.line_data = w_trans_queue[0].line_data;
             file_line_ack = 1'b1; 
           end else begin 
             file_line_ack = 1'b0;
           end
+        end
+        "NONE": begin
+          file_line_ack = 1'b1;  
         end
       endcase  
       //$display("tran queue %d",transaction_data.timestep);
@@ -130,10 +155,12 @@ module axi_injector #(
   end
 
   // Simulation clocks
-  always @(posedge clk_i) begin
-    sim_time = $time + 10;
+  always_ff @(posedge clk_i) begin
+    sim_time <= $time + 10;
   end 
-
+//&& aw_trans_data.timestep != '0
+ //&& w_trans_data.timestep != '0
+ //&& ar_trans_data.timestep != '0
   always_comb begin
     // AW AXI pending request
     if (!rst_ni) begin
@@ -141,37 +168,63 @@ module axi_injector #(
       ar_req = 1'b0;
       w_req  = 1'b0;
     end else begin
-      if (aw_trans_data.timestep == sim_time) begin
+      if (aw_trans_data.timestep <= sim_time && aw_trans_queue.size() != 0) begin
         aw_req = 1'b1;
       end else aw_req = 1'b0;
   
       // Pending AR AXI request
-      if (ar_trans_data.timestep == sim_time) begin
+      if (ar_trans_data.timestep <= sim_time && ar_trans_queue.size() != 0) begin
         ar_req = 1'b1;
       end else ar_req = 1'b0;
   
-      if (w_trans_data.timestep == sim_time) begin
+      if (w_trans_data.timestep <= sim_time && w_trans_queue.size() != 0) begin
         w_req = 1'b1;
+        //$display("here w_req %d", $time);
+        //$display("here w_req %d time %d", w_trans_data.timestep, sim_time);
       end else w_req = 1'b0;
     end 
   end 
 
+  assign aw_pop = (aw_req || aw_pending) && axi_resp_i.aw_ready;
+  assign w_pop = (w_req || w_pending) && axi_resp_i.w_ready;
+  assign ar_pop = (ar_req || ar_pending) && axi_resp_i.ar_ready;
+
   always @(posedge clk_i) begin
-      if (aw_req && axi_resp_i.aw_ready) begin
-        //$display("here aw_req %d", $time);
-        aw_trans_queue.pop_front();
-      end 
-      
-      if (w_req && axi_resp_i.w_ready) begin
-        //$display("here w_req %d", $time);
-        w_trans_queue.pop_front();
-      end 
-      
-      if (ar_req && axi_resp_i.ar_ready) begin
-        ar_trans_queue.pop_front();
-      end 
-    //end
+    if ((aw_req || aw_pending) && axi_resp_i.aw_ready) begin
+      //$display("here aw_req %d", $time);
+      //$display("queue size %d", aw_trans_queue.size());
+      aw_trans_queue.pop_front();
+      //$display("queue size %d", aw_trans_queue.size());
+    end 
+    
+    if ((w_req || w_pending) && axi_resp_i.w_ready) begin
+      //$display("queue size %d", w_trans_queue.size());
+      //$display("here w_req %d", $time);
+      w_trans_queue.pop_front();
+      //$display("queue size %d", w_trans_queue.size());
+    end 
+    
+    if ((ar_req || ar_pending) && axi_resp_i.ar_ready) begin
+      ar_trans_queue.pop_front();
+    end 
   end
+
+  //always @(pos) begin
+  //    if (axi_req_o.aw_valid && axi_resp_i.aw_ready) begin
+  //      //$display("here aw_req %d", $time);
+  //      aw_trans_queue.pop_front();
+  //    end 
+  //    
+  //    if (axi_req_o.w_valid && axi_resp_i.w_ready) begin
+  //      //$display("here w_req %d", $time);
+  //      w_trans_queue.pop_front();
+  //    end 
+  //    
+  //    if (axi_req_o.ar_valid && axi_resp_i.ar_ready) begin
+  //      ar_trans_queue.pop_front();
+  //    end 
+  //  //end
+  //end
 
   always_ff @(posedge clk_i or negedge rst_ni) begin : proc_pending_req
     if(~rst_ni) begin
@@ -185,11 +238,25 @@ module axi_injector #(
 
       if (w_req && !axi_resp_i.w_ready) begin
         w_pending <= 1'b1; 
-      end else if (axi_resp_i.w_ready) w_pending <= 1'b0;
+      end else if (axi_resp_i.w_ready) begin 
+        w_pending <= 1'b0;
+      end 
 
       if (ar_req && !axi_resp_i.ar_ready) begin
         ar_pending <= 1'b1; 
       end else if (axi_resp_i.ar_ready) ar_pending <= 1'b0;
+
+      //if ((aw_req || aw_pending) && axi_resp_i.aw_ready) begin
+      //  //$display("here aw_req %d", $time);
+      //  aw_trans_queue.pop_front();
+      //end 
+      //if ((w_req || w_pending) && axi_resp_i.w_ready) begin
+      //  //$display("here w_req %d", $time);
+      //  w_trans_queue.pop_front();
+      //end 
+      //if ((ar_req || ar_pending) && axi_resp_i.ar_ready) begin
+      //  ar_trans_queue.pop_front();
+      //end 
     end
   end
 
@@ -256,14 +323,18 @@ module axi_injector #(
       // Check if we have found the key
       if (source.substr(i, key_len + i) == key) begin
         // Move index past the key and jump ': 
-        if (key == "time") i = i + key_len + 19;
-        else i = i + key_len + 4;
+        //if (key == "time") i = i + key_len + 19;
+        //else i = i + key_len + 4;
+        i = i + key_len + 4;
 
         //$display("The key '%s' cont %s i: %d", key, source.substr(i, i+10), i);
         // Now we start extracting the value
         j = i;
         // Find where the value ends (either comma, closing brace, or end of string)
         if (key != "time") begin
+          //find first number of time
+          while (i < source_len && source[i] == " ") i++;
+          j = i;
           while (j < source_len && source[j] != "," && source[j+1] != " " && source[j+2] != "'") j++;
         end else begin
           while (i < source_len && source[i] == " ") i++;
@@ -272,7 +343,6 @@ module axi_injector #(
         
         // Extract the value string from i to j-1
         value_str = source.substr(i, j);
-        //$display("The key '%s' has a hex value: %s %d %d", key, value_str, i , j);
         // Check if the value is a hexadecimal number
         if (value_str[0] == "0" && value_str[1] == "x") begin
           // Convert hexadecimal to integer
@@ -281,6 +351,7 @@ module axi_injector #(
         end else if (key == "time") begin // Check if the value is a decimal number
           // Convert decimal to integer
           value_int = $sscanf(value_str, "%d", val);
+          //$display("The key '%s' has a hex value: %s %d %d", key, value_str, i , j);
           //$display("The key '%s' has a hex value: %d", key, val);
         
         // Check if the value is a string (wrapped in single or double quotes)
