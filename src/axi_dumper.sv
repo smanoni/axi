@@ -23,6 +23,7 @@ module axi_dumper #(
   parameter bit  LogW      = 1'b0,
   parameter bit  LogB      = 1'b0,
   parameter bit  LogR      = 1'b0,
+  parameter bit  LogTi     = 1'b0,
   parameter type axi_req_t  = logic,
   parameter type axi_resp_t = logic
 ) (
@@ -42,6 +43,94 @@ module axi_dumper #(
     $display("[Tracer] Logging axi accesses to %s", fn);
   end
 
+  logic aw_pending;
+  logic ar_pending;
+  logic w_pending;
+  logic b_pending;
+  logic r_pending;
+
+  logic w_issue;
+  logic ar_issue;
+  logic b_issue;
+  logic aw_issue;
+  logic r_issue;
+
+  logic [63:0] aw_itime;
+  logic [63:0] ar_itime;
+  logic [63:0] w_itime;
+  logic [63:0] r_itime;
+  logic [63:0] b_itime;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin : proc_time_sampling
+    if(~rst_ni) begin
+      aw_itime <= '0;
+      ar_itime <= '0;
+      w_itime <= '0;
+      r_itime <= '0;
+      b_itime <= '0;
+    end else begin
+      if (!aw_pending) begin 
+        if (aw_issue && !axi_resp_i.aw_ready) aw_itime <= $time - 10;
+        else aw_itime <= $time;
+      end else if (axi_resp_i.aw_ready) aw_itime <= $time;
+
+      if (!ar_pending) begin 
+        if (ar_issue && !axi_resp_i.ar_ready) ar_itime <= $time - 10;
+        else ar_itime <= $time;
+      end else if (axi_resp_i.ar_ready) ar_itime <= $time;
+
+      if (!w_pending) begin 
+        if (w_issue && !axi_resp_i.w_ready) w_itime <= $time - 10;
+        else w_itime <= $time;
+      end else if (axi_resp_i.w_ready) w_itime <= $time;
+
+      if (!r_pending) begin 
+        if (r_issue && !axi_req_i.r_ready) r_itime <= $time - 10;
+        else r_itime <= $time;
+      end else if (axi_req_i.r_ready) r_itime <= $time;
+
+      if (!b_pending) begin 
+        if (b_issue && !axi_req_i.b_ready) b_itime <= $time - 10;
+        else b_itime <= $time;
+      end else if (axi_req_i.b_ready) b_itime <= $time;
+    end
+  end
+
+  always_comb begin: proc_gen_issue_time 
+    w_issue = 1'b0;
+    ar_issue = 1'b0;
+    b_issue = 1'b0;
+    aw_issue = 1'b0;
+    r_issue = 1'b0;
+    if (axi_req_i.w_valid && !w_pending) w_issue = 1'b1;
+    if (axi_req_i.aw_valid && !aw_pending) aw_issue = 1'b1;
+    if (axi_req_i.ar_valid && !ar_pending) ar_issue = 1'b1;
+    if (axi_resp_i.r_valid && !r_pending) r_issue = 1'b1;
+    if (axi_resp_i.b_valid && !b_pending) b_issue = 1'b1;
+  end
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin : proc_pending_reqs
+    if(~rst_ni) begin
+      aw_pending <= 1'b0;
+      ar_pending <= 1'b0;
+      w_pending <= 1'b0;
+      b_pending <= 1'b0;
+      r_pending <= 1'b0;
+    end else begin
+      if (axi_req_i.w_valid && !axi_resp_i.w_ready) w_pending <= 1'b1;
+      if (axi_req_i.aw_valid && !axi_resp_i.aw_ready) aw_pending <= 1'b1;
+      if (axi_req_i.ar_valid && !axi_resp_i.ar_ready) ar_pending <= 1'b1;
+      if (axi_resp_i.r_valid && !axi_req_i.r_ready) r_pending <= 1'b1;
+      if (axi_resp_i.b_valid && !axi_req_i.b_ready) b_pending <= 1'b1;
+    
+      if (w_pending && axi_resp_i.w_ready) w_pending <= 1'b0;
+      if (aw_pending && axi_resp_i.aw_ready) aw_pending <= 1'b0;
+      if (ar_pending && axi_resp_i.ar_ready) ar_pending <= 1'b0;
+      if (r_pending && axi_req_i.r_ready) r_pending <= 1'b0;
+      if (b_pending && axi_req_i.b_ready) b_pending <= 1'b0; 
+    end
+  end
+
   always_ff @(posedge clk_i) begin : proc_tracer
     automatic string aw_data [string];
     automatic string ar_data [string];
@@ -59,6 +148,7 @@ module axi_dumper #(
       aw_data = '{
         "type"   : "\"AW\"",
         "time"   : $sformatf("%d", $time()),
+        "isstime": $sformatf("%d", aw_itime),
         "id"     : $sformatf("0x%0x", axi_req_i.aw.id),
         "addr"   : $sformatf("0x%0x", axi_req_i.aw.addr),
         "len"    : $sformatf("0x%0x", axi_req_i.aw.len),
@@ -75,6 +165,7 @@ module axi_dumper #(
       ar_data = '{
         "type"   : "\"AR\"",
         "time"   : $sformatf("%d", $time()),
+        "isstime": $sformatf("%d", ar_itime),
         "id"     : $sformatf("0x%0x", axi_req_i.ar.id),
         "addr"   : $sformatf("0x%0x", axi_req_i.ar.addr),
         "len"    : $sformatf("0x%0x", axi_req_i.ar.len),
@@ -90,6 +181,7 @@ module axi_dumper #(
       w_data = '{
         "type" : "\"W\"",
         "time" : $sformatf("%d", $time()),
+        "isstime": $sformatf("%d", w_itime),
         "data" : $sformatf("0x%0x", axi_req_i.w.data),
         "strb" : $sformatf("0x%0x", axi_req_i.w.strb),
         "last" : $sformatf("0x%0x", axi_req_i.w.last),
@@ -98,6 +190,7 @@ module axi_dumper #(
       b_data = '{
         "type" : "\"B\"",
         "time" : $sformatf("%d", $time()),
+        "isstime": $sformatf("%d", b_itime),
         "id"   : $sformatf("0x%0x", axi_resp_i.b.id),
         "resp" : $sformatf("0x%0x", axi_resp_i.b.resp),
         "user" : $sformatf("0x%0x", axi_resp_i.b.user)
@@ -105,6 +198,7 @@ module axi_dumper #(
       r_data = '{
         "type" : "\"R\"",
         "time" : $sformatf("%d", $time()),
+        "isstime": $sformatf("%d", r_itime),
         "id"   : $sformatf("0x%0x", axi_resp_i.r.id),
         "data" : $sformatf("0x%0x", axi_resp_i.r.data),
         "resp" : $sformatf("0x%0x", axi_resp_i.r.resp),

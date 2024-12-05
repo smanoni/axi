@@ -30,6 +30,7 @@ module axi_injector #(
 ) (
   input  logic clk_i,
   input  logic rst_ni,
+  output logic terminate_o,
   output axi_req_t axi_req_o,
   input  axi_resp_t axi_resp_i
 );
@@ -88,13 +89,14 @@ module axi_injector #(
     int file;
     // If is true the prev line has been consumed
     file_line_ack = 1'b1;
+    terminate_o = 1'b0;
 
     // Open file
     file = $fopen(FileName, "r");
     if (file == 0) begin
       $fatal(1, "Failed to open file: %s", FileName);
     end
-
+    $display("Sourcing AXI transactions from: ", FileName);
     // Start reading lines from file
     while (!$feof(file)) begin
   
@@ -110,7 +112,7 @@ module axi_injector #(
       case(req_type)
         "AW": begin
           if (aw_trans_queue.size() < SizeQueue) begin
-            aw_trans.timestep  = extract_value(file_line, "time");
+            aw_trans.timestep  = extract_value(file_line, "isstime");
             aw_trans.line_data = file_line;
             aw_trans_queue.push_back(aw_trans);
             //aw_trans_data.timestep = aw_trans_queue[0].timestep;
@@ -122,7 +124,7 @@ module axi_injector #(
         end
         "AR": begin
           if (ar_trans_queue.size() < SizeQueue) begin
-            ar_trans.timestep  = extract_value(file_line, "time");
+            ar_trans.timestep  = extract_value(file_line, "isstime");
             ar_trans.line_data = file_line;
             ar_trans_queue.push_back(ar_trans);
             //ar_trans_data.timestep = ar_trans_queue[0].timestep;
@@ -134,7 +136,7 @@ module axi_injector #(
         end
         "W": begin
           if (w_trans_queue.size() < SizeQueue) begin
-            w_trans.timestep  = extract_value(file_line, "time");
+            w_trans.timestep  = extract_value(file_line, "isstime");
             w_trans.line_data = file_line;
             w_trans_queue.push_back(w_trans);
             //$display("t: %d, fl: %s", $time, w_trans_queue[3].line_data);
@@ -152,11 +154,15 @@ module axi_injector #(
       //$display("tran queue %d",transaction_data.timestep);
       @(posedge clk_i);
     end  
+
+    terminate_o = 1'b1;
+    $fclose(file);
   end
 
   // Simulation clocks
   always_ff @(posedge clk_i) begin
-    sim_time <= $time + 10;
+    if (!rst_ni) sim_time <= '1;
+    else sim_time <= $time;
   end 
 //&& aw_trans_data.timestep != '0
  //&& w_trans_data.timestep != '0
@@ -331,7 +337,7 @@ module axi_injector #(
         // Now we start extracting the value
         j = i;
         // Find where the value ends (either comma, closing brace, or end of string)
-        if (key != "time") begin
+        if (key != "isstime") begin
           //find first number of time
           while (i < source_len && source[i] == " ") i++;
           j = i;
@@ -348,7 +354,7 @@ module axi_injector #(
           // Convert hexadecimal to integer
           value_int = $sscanf(source.substr(i+2, j), "%h", val);
           //$display("The key '%s' has a hex value: %h", key, val);
-        end else if (key == "time") begin // Check if the value is a decimal number
+        end else if (key == "isstime") begin // Check if the value is a decimal number
           // Convert decimal to integer
           value_int = $sscanf(value_str, "%d", val);
           //$display("The key '%s' has a hex value: %s %d %d", key, value_str, i , j);
@@ -390,7 +396,7 @@ module axi_injector #(
       // Check if we have found the key
       if (source.substr(i, key_len + i) == key) begin
         // Move index past the key and jump ': 
-        if (key == "time") i = i + key_len + 19;
+        if (key == "isstime") i = i + key_len + 19;
         else i = i + key_len + 4;
         
         // Now we start extracting the value
